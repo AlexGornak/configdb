@@ -4,7 +4,7 @@
  *  Created on: 11 мая 2023 г.
  *      Author: ag
  */
-#define VERSION         "1.2"
+#define VERSION         "1.3"
 #include <stdio.h>
 #include <string.h>
 #include <ctype.h>
@@ -80,10 +80,10 @@ field_t *root;
 
 int main(int argc, char **argv)
 {
-    /*cfg_export(&cfg);
+    cfg_export(&cfg);
     print_field(root, 0);
     printf("ptr=%d\n", ptr);   
-    cfg_write();*/
+    cfg_write();
     cfg_read();
     printf("ptr=%d\n", ptr); 
     print_field(root, 0);
