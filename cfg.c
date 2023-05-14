@@ -4,7 +4,7 @@
  *  Created on: 11 мая 2023 г.
  *      Author: ag
  */
-#define VERSION         "1.3"
+#define VERSION         "1.4"
 #include <stdio.h>
 #include <string.h>
 #include <ctype.h>
@@ -73,6 +73,8 @@ static void print_field(field_t *f, int level);
 static void prepare_to_write(field_t *f);
 static void prepare_after_read(field_t *f);
 
+static void print_bytes_array(int n, uint8_t *a);
+
 #define MEMB_SIZE   4096
 uint8_t memb[MEMB_SIZE];
 uint32_t ptr = 0;
@@ -80,10 +82,10 @@ field_t *root;
 
 int main(int argc, char **argv)
 {
-    cfg_export(&cfg);
+    /*cfg_export(&cfg);
     print_field(root, 0);
     printf("ptr=%d\n", ptr);   
-    cfg_write();
+    cfg_write();*/
     cfg_read();
     printf("ptr=%d\n", ptr); 
     print_field(root, 0);
@@ -92,9 +94,42 @@ int main(int argc, char **argv)
     printf("flash_key = %u\n", cfg1.flash_key);
     printf("version = %d\n", cfg1.version);
     printf("name = %s\n", cfg1.rs485gw_name);
+
+    printf("ip_addr = %d.%d.%d.%d\n", cfg1.net_config.ip_addr[0], cfg1.net_config.ip_addr[1],\
+     cfg1.net_config.ip_addr[2], cfg1.net_config.ip_addr[3]);
+    printf("netmask = %d.%d.%d.%d\n", cfg1.net_config.netmask[0], cfg1.net_config.netmask[1],\
+     cfg1.net_config.netmask[2], cfg1.net_config.netmask[3]);
+    printf("gateway = %d.%d.%d.%d\n", cfg1.net_config.gateway[0], cfg1.net_config.gateway[1],\
+     cfg1.net_config.gateway[2], cfg1.net_config.gateway[3]);
+    printf("mac_addr = %02x:%02x:%02x:%02x:%02x:%02x\n", cfg1.net_config.mac_addr[0], cfg1.net_config.mac_addr[1],\
+     cfg1.net_config.mac_addr[2], cfg1.net_config.mac_addr[3], cfg1.net_config.mac_addr[4], cfg1.net_config.mac_addr[5]);
+
     for (int i=0; i<NUM_UARTS; i++) {
         printf("uart_%d: br=%u parity=%c stopbits=%d master=%d\n", i, cfg1.uart_config[i].baudrate, \
         cfg1.uart_config[i].parity, cfg1.uart_config[i].stopbits, cfg1.uart_config[i].master);
+    }
+
+    for (int i=0; i<NUM_UARTS; i++) {
+        printf("rs485gw_%d: protocol=%d port=%d to_ip=%d.%d.%d.%d to_port=%d\n", i, cfg1.rs485gw_config[i].protocol, \
+        cfg1.rs485gw_config[i].port, cfg1.rs485gw_config[i].to_ip[0], cfg1.rs485gw_config[i].to_ip[1], \
+        cfg1.rs485gw_config[i].to_ip[2], cfg1.rs485gw_config[i].to_ip[3], cfg1.rs485gw_config[i].to_port);
+    }
+    
+    printf("snmpv3_enable=%d\n", cfg1.snmp_config.snmpv3_enable);
+    printf("community_read=%s\n", cfg1.snmp_config.community.read);
+    printf("community_write=%s\n", cfg1.snmp_config.community.write);
+    printf("snmpv3_users:\n");
+    for (int i=0; i<2; i++) {
+        printf("snmpv3_user_%d:\n", i);
+        printf("\tname=%s\n", cfg1.snmp_config.users[i].username);
+        printf("\tauth_key=["); print_bytes_array(20, cfg1.snmp_config.users[i].auth_key); printf("]\n");
+        printf("\tpriv_key=["); print_bytes_array(20, cfg1.snmp_config.users[i].priv_key); printf("]\n");
+    }
+    for (int i=0; i<8; i++) {
+        if (*cfg1.users[i].name == 0) break;
+        printf("user_%d\n", i);
+        printf("\tname=%s\n", cfg1.users[i].name);
+        printf("\tsshpass=["); print_bytes_array(32, cfg1.users[i].sshpass); printf("]\n");
     }
     return 0;
 }
@@ -170,6 +205,12 @@ static field_t *get_field(int n, int *path)
     return get_field_from(root, n, path);
 }
 
+static void print_bytes_array(int n, uint8_t *a)
+{
+    for (int i=0; i<n; i++)
+        printf(" %d", a[i]);    
+}
+
 static void print_field(field_t *f, int level)
 {
     int i;
@@ -185,8 +226,9 @@ static void print_field(field_t *f, int level)
         case FT_BYTES_ARRAY:
             for (i=0; i<level+1; i++) printf("    ");
             printf("val=[");
-            for (i=0; i<f->sz; i++)
-                printf(" %d", ((uint8_t *)f->data.val)[i]);
+            print_bytes_array(f->sz, (uint8_t *)f->data.val);
+            //for (i=0; i<f->sz; i++)
+                //printf(" %d", ((uint8_t *)f->data.val)[i]);
             printf("]\n");
             break;
         case FT_CHAR:
@@ -466,7 +508,7 @@ int cfg_import(config_t *cfg)
 {
     field_t *f, *f1;
     
-    int p[] = {KEY_CONFIG, KEY_FLASH_KEY};
+    int p[] = {KEY_CONFIG, KEY_FLASH_KEY, 0, 0};
     f = get_field(2, p);
     if (f) cfg->flash_key = *(uint32_t *)f->data.val;
     
@@ -498,6 +540,91 @@ int cfg_import(config_t *cfg)
             if (f1) cfg->uart_config[i].master = *(uint8_t *)f1->data.val;
         }
     }
+    
+    p[1] = KEY_NET_CONFIG;
+    p[2] = KEY_IP_ADDR;
+    f = get_field(3, p);
+    if (f) memcpy(cfg->net_config.ip_addr, (uint8_t *)f->data.val, f->sz);
+    p[2] = KEY_NETMASK;
+    f = get_field(3, p);
+    if (f) memcpy(cfg->net_config.netmask, (uint8_t *)f->data.val, f->sz);
+    p[2] = KEY_GW_ADDR;
+    f = get_field(3, p);
+    if (f) memcpy(cfg->net_config.gateway, (uint8_t *)f->data.val, f->sz);
+    p[2] = KEY_MAC_ADDR;
+    f = get_field(3, p);
+    if (f) memcpy(cfg->net_config.mac_addr, (uint8_t *)f->data.val, f->sz);
+    
+    p[1] = KEY_GW_CONFIG;
+    f = get_field(2, p);
+    if (f) {
+        int p1[3] = {KEY_GW_CONFIG, 0, 0};
+        for (int i=0; i<NUM_UARTS; i++) {
+            p1[1] = i;
+            p1[2] = KEY_PROTOCOL;
+            f1 = get_field_from(f, 3, p1);
+            if (f1) cfg->rs485gw_config[i].protocol = *(uint8_t *)f1->data.val;
+            p1[2] = KEY_PORT;
+            f1 = get_field_from(f, 3, p1);
+            if (f1) cfg->rs485gw_config[i].port = *(uint16_t *)f1->data.val;
+            p1[2] = KEY_TO_PORT;
+            f1 = get_field_from(f, 3, p1);
+            if (f1) cfg->rs485gw_config[i].to_port = *(uint16_t *)f1->data.val;
+            p1[2] = KEY_TO_IP;
+            f1 = get_field_from(f, 3, p1);
+            if (f1) memcpy(cfg->rs485gw_config[i].to_ip, (uint16_t *)f1->data.val, f1->sz);
+        }        
+    }
+
+    p[1] = KEY_SNMP_CONFIG;
+    
+    p[2] = KEY_SNMPV3_ENABLE;
+    f = get_field(3, p);
+    if (f) cfg->snmp_config.snmpv3_enable = *(uint8_t *)f->data.val;
+    
+    p[2] = KEY_SNMP_COMMUNITY;
+    p[3] = KEY_READ;
+    f = get_field(4, p);
+    if (f) strcpy(cfg->snmp_config.community.read, (char *)f->data.val);
+    p[3] = KEY_WRITE;
+    f = get_field(4, p);
+    if (f) strcpy(cfg->snmp_config.community.write, (char *)f->data.val);
+
+    p[2] = KEY_SNMPV3_USER;
+    f = get_field(3, p);
+    if (f) {
+        int p1[3] = {KEY_SNMPV3_USER, 0, 0};
+        for (int i=0; i<2; i++) {
+            p1[1] = i;
+            p1[2] = KEY_NAME;
+            f1 = get_field_from(f, 3, p1);
+            if (f1) stpcpy(cfg->snmp_config.users[i].username, (char *)f1->data.val);
+            p1[2] = KEY_AUTH_KEY;
+            f1 = get_field_from(f, 3, p1);
+            if (f1) memcpy(cfg->snmp_config.users[i].auth_key, (char *)f1->data.val, f1->sz);
+            p1[2] = KEY_PRIV_KEY;
+            f1 = get_field_from(f, 3, p1);
+            if (f1) memcpy(cfg->snmp_config.users[i].priv_key, (char *)f1->data.val, f1->sz);
+        }
+    }
+    
+    p[1] = KEY_USERS;
+    f = get_field(2, p);
+    if (f) {
+        int p1[3] = {KEY_USERS, 0, 0};
+        for (int i=0; i<8; i++) {
+            p1[1] = i;
+            p1[2] = KEY_NAME;
+            f1 = get_field_from(f, 3, p1);
+            if (f1) {
+                strcpy(cfg->users[i].name, (char *)f1->data.val);
+                if (*(char *)f1->data.val == 0) break;
+            }
+            p1[2] = KEY_SSHPASS;
+            f1 = get_field_from(f, 3, p1);
+            if (f1) memcpy(cfg->users[i].sshpass, (uint8_t *)f1->data.val, f1->sz);
+        }
+    }    
     return ERR_NONE;
 }
 
