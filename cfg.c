@@ -66,14 +66,13 @@ config_t cfg = { .flash_key = FLASH_KEY ,\
 config_t cfg1;
 
 static void *alloc_mem(int size);
-static field_t *new_field(int key, int type, const char* name, void *val);
-static field_t *new_array_u8(int key, int sz, const char* name, uint8_t *val);
+static field_t *new_field(int key, int type, int N, const char* name, void *val);
 static int add_field(field_t *parent, field_t *child);
 static void print_field(field_t *f, int level);
 static void prepare_to_write(field_t *f);
 static void prepare_after_read(field_t *f);
 
-static void print_array_u8(int n, uint8_t *a);
+static void print_array(int type, int n, void *a);
 
 #define MEMB_SIZE   8192
 cfg_hdr_t *cfg_hdr_ptr;
@@ -136,14 +135,14 @@ int main(int argc, char **argv)
     for (int i=0; i<2; i++) {
         printf("snmpv3_user_%d:\n", i);
         printf("\tname=%s\n", cfg1.snmp_config.users[i].username);
-        printf("\tauth_key=["); print_array_u8(20, cfg1.snmp_config.users[i].auth_key); printf("]\n");
-        printf("\tpriv_key=["); print_array_u8(20, cfg1.snmp_config.users[i].priv_key); printf("]\n");
+        printf("\tauth_key=["); print_array(FT_U8, 20, cfg1.snmp_config.users[i].auth_key); printf("]\n");
+        printf("\tpriv_key=["); print_array(FT_U8, 20, cfg1.snmp_config.users[i].priv_key); printf("]\n");
     }
     for (int i=0; i<8; i++) {
         if (*cfg1.users[i].name == 0) break;
         printf("user_%d\n", i);
         printf("\tname=%s\n", cfg1.users[i].name);
-        printf("\tsshpass=["); print_array_u8(32, cfg1.users[i].sshpass); printf("]\n");
+        printf("\tsshpass=["); print_array(FT_U8, 32, cfg1.users[i].sshpass); printf("]\n");
     }
     return 0;
 }
@@ -159,7 +158,28 @@ static void *alloc_mem(int size)
     return p;
 }
 
-static field_t *new_field(int key, int type, const char* name, void *val)
+static int get_type_size(int type)
+{
+    int sz = 0;
+    switch (type) {
+        //case FT_ARRAY_U8:
+        case FT_CHAR:
+        case FT_STR:
+        case FT_U8:
+            sz = sizeof(char);
+            break;        
+        case FT_U16:
+            sz = sizeof(uint16_t);
+            break;
+        case FT_U32:
+            sz = sizeof(uint32_t);
+            break;
+        default:
+            break;
+    }
+    return sz;
+}
+static field_t *new_field(int key, int type, int N, const char* name, void *val)
 {
     field_t *fptr = alloc_mem(sizeof(field_t));
     if (!fptr) {
@@ -171,35 +191,24 @@ static field_t *new_field(int key, int type, const char* name, void *val)
     fptr->key = key;
     fptr->type = type;
     fptr->name = fname;
+    fptr->N = N;
     if (val) {
-        /*int val_sz = 0;
-        switch (type) {
-        //case FT_ARRAY_U8:
-        case FT_CHAR:
-            val_sz = sizeof(char);
-            break;
-        case FT_STR:
-        case FT_U8:
-        case FT_U16:
-        case FT_U32:
-        default:
-            break;
-        }*/
-        fptr->val = val;
+        int sz;
+        sz = get_type_size(type)*N;
+        void *fval = alloc_mem(sz);
+        if (fval) {
+            memcpy(fval, val, sz);
+        }
+        fptr->val = fval;
     }
     else fptr->head = NULL;
     return fptr;
 }
 
-static field_t *new_array_u8(int key, int ne, const char *name, uint8_t *val)
-{
-    field_t *fptr = new_field(key, FT_ARRAY_U8, name, val);
-    if (!fptr) {
-        return NULL;
-    }
-    fptr->sz = ne;
-    return fptr;
-}
+#define new_rec(key, name)                  new_field(key, FT_REC, 1, name, NULL)
+#define new_val(key, type, name, val)       new_field(key, type, 1, name, val)
+#define new_str(key, N, name, val)          new_field(key, FT_STR, N, name, val)
+#define new_array(key, type, N, name, val)  new_field(key, type, N, name, val)
 
 static int add_field(field_t *parent, field_t *child)
 {
@@ -231,10 +240,14 @@ static field_t *get_field(int n, int *path)
     return get_field_from(root, n, path);
 }
 
-static void print_array_u8(int n, uint8_t *a)
+static void print_array(int type, int n, void *a)
 {
-    for (int i=0; i<n; i++)
-        printf(" %d", a[i]);    
+    for (int i=0; i<n; i++) {
+        if (type==FT_CHAR) printf(" %x", ((uint8_t *)a)[i]);
+        else if (type==FT_U8) printf(" %u", ((uint8_t *)a)[i]); 
+        else if (type==FT_U16) printf(" %u", ((uint16_t *)a)[i]); 
+        else if (type==FT_U32) printf(" %u", ((uint32_t *)a)[i]); 
+    }
 }
 
 static void print_field(field_t *f, int level)
@@ -242,54 +255,27 @@ static void print_field(field_t *f, int level)
     int i;
     for (i=0; i<level; i++) printf("    ");
     printf("key=%d, type=%d", f->key, f->type);
-    switch (f->type) {
-        case FT_REC:
-        case FT_ARRAY:
-            if (f->name) printf(", fname=%s\n", f->name);
-            else printf("\n");
-            for (field_t *l = f->head; l; l=l->next) {
-                print_field(l, level+1);
-            }
-            break;
-        case FT_ARRAY_U8:
-            printf("\n");
-            for (i=0; i<level+1; i++) printf("    ");
+    if (f->type == FT_REC) {
+        if (f->name) printf(", fname=%s\n", f->name);
+        else printf("\n");
+        for (field_t *l = f->head; l; l=l->next) {
+            print_field(l, level+1);
+        }
+    } else {
+        printf("\n");
+        for (i=0; i<level+1; i++) printf("    ");
+        if (f->type != FT_STR && f->N > 1) { //array
             printf("%s=[", f->name?f->name:"val");
-            print_array_u8(f->sz, (uint8_t *)f->val);
+            print_array(f->type, f->N, f->val);
             printf("]\n");
-            break;
-        case FT_CHAR:
-            printf("\n");
-            for (i=0; i<level+1; i++) printf("    ");
+        } else {
             printf("%s=", f->name?f->name:"val");
-            printf("'%c'\n", *(char *)f->val);
-            break;
-        case FT_STR:
-            printf("\n");
-            for (i=0; i<level+1; i++) printf("    ");
-            printf("%s=", f->name?f->name:"val");
-            printf("%s\n", (char *)f->val);
-            break;
-        case FT_U8:
-            printf("\n");
-            for (i=0; i<level+1; i++) printf("    ");
-            printf("%s=", f->name?f->name:"val");
-            printf("%d\n", *(uint8_t *)f->val);
-            break;
-        case FT_U16:
-            printf("\n");
-            for (i=0; i<level+1; i++) printf("    ");
-            printf("%s=", f->name?f->name:"val");
-            printf("%d\n", *(uint16_t *)f->val);
-            break;
-        case FT_U32:    
-            printf("\n");
-            for (i=0; i<level+1; i++) printf("    ");
-            printf("%s=", f->name?f->name:"val");
-            printf("%u\n", *(uint32_t *)f->val);
-            break;
-        default:
-            break;
+            if (f->type == FT_CHAR) printf("'%c'\n", *(char *)f->val);
+            else if (f->type == FT_STR) printf("%s\n", (char *)f->val);
+            else if (f->type == FT_U8) printf("%d\n", *(uint8_t *)f->val);
+            else if (f->type == FT_U16) printf("%d\n", *(uint16_t *)f->val);
+            else if (f->type == FT_U32) printf("%u\n", *(uint32_t *)f->val);
+        }
     }
 }
 
@@ -303,7 +289,6 @@ static void prepare_to_write(field_t *f)
         f->name = (char *)((pointer)f->name - (pointer)memb);
     switch (f->type) {
         case FT_REC:
-        case FT_ARRAY:
             chld = f->head;
             if (chld)
                 f->head = (field_t *)((pointer)chld - (pointer)memb);
@@ -315,7 +300,6 @@ static void prepare_to_write(field_t *f)
                 chld = tmp;
             }
             break;
-        case FT_ARRAY_U8:
         case FT_CHAR:
         case FT_STR:
         case FT_U8:
@@ -339,7 +323,6 @@ static void prepare_after_read(field_t *f)
         f->name = (char *)((pointer)f->name + (pointer)memb);
     switch (f->type) {
         case FT_REC:
-        case FT_ARRAY:
             if (f->head)
                 f->head = (field_t *)((pointer)f->head + (pointer)memb);
             chld = f->head;
@@ -348,7 +331,6 @@ static void prepare_after_read(field_t *f)
                 chld = chld->next;
             }
             break;
-        case FT_ARRAY_U8:
         case FT_CHAR:
         case FT_STR:
         case FT_U8:
@@ -365,112 +347,75 @@ static void prepare_after_read(field_t *f)
 int cfg_export(config_t *cfg)
 {
     int i;
-    void *val;
     field_t *fld, *fld1, *fld2;
 
-    root = new_field(KEY_CONFIG, FT_REC, "config", NULL);
+    root = new_rec(KEY_CONFIG, "config");
 
     /********** uint32_t flash_key **************/
-    val = alloc_mem(sizeof(uint32_t));
-    *(uint32_t *)val = cfg->flash_key;
-    fld = new_field(KEY_FLASH_KEY, FT_U32, "flash_key", val);
+    fld = new_val(KEY_FLASH_KEY, FT_U32, "flash_key", &cfg->flash_key);
     add_field(root, fld);
     /********************************************/
 
     /********** uint16_t version ****************/
-    val = alloc_mem(sizeof(uint16_t));
-    *(uint16_t *)val = cfg->version;
-    fld = new_field(KEY_VERSION, FT_U16, "version", val);
+    fld = new_val(KEY_VERSION, FT_U16, "version", &cfg->version);
     add_field(root, fld);
     /********************************************/
 
     /*****char rs485gw_name[USER_NAME_SIZE]******/
-    val = alloc_mem(USER_NAME_SIZE);
-    memcpy(val, cfg->rs485gw_name, USER_NAME_SIZE);
-    fld = new_field(KEY_NAME, FT_STR, "rs485gw_name", val);
+    fld = new_str(KEY_NAME, USER_NAME_SIZE, "rs485gw_name", &cfg->rs485gw_name);
     add_field(root, fld);
     /********************************************/
 
     /************** net_config ******************/
-    fld = new_field(KEY_NET_CONFIG, FT_REC, "net_config", NULL);
+    fld = new_rec(KEY_NET_CONFIG, "net_config");
     
-    val = alloc_mem(4);
-    memcpy(val, cfg->net_config.ip_addr, 4);
-    fld1 = new_array_u8(KEY_IP_ADDR, 4, "ip_addr", val);
+    fld1 = new_array(KEY_IP_ADDR, FT_U8, 4, "ip_addr", cfg->net_config.ip_addr);
+    add_field(fld, fld1);    
+    fld1 = new_array(KEY_NETMASK, FT_U8, 4, "netmask", cfg->net_config.netmask);
+    add_field(fld, fld1);
+    fld1 = new_array(KEY_GW_ADDR, FT_U8, 4, "gateway", cfg->net_config.gateway);
+    add_field(fld, fld1);
+    fld1 = new_array(KEY_MAC_ADDR, FT_U8, 6, "mac", cfg->net_config.mac_addr);
     add_field(fld, fld1);
     
-    val = alloc_mem(4);
-    memcpy(val, cfg->net_config.netmask, 4);
-    fld1 = new_array_u8(KEY_NETMASK, 4, "netmask", val);
-    add_field(fld, fld1);
-
-    val = alloc_mem(4);
-    memcpy(val, cfg->net_config.gateway, 4);
-    fld1 = new_array_u8(KEY_GW_ADDR, 4, "gateway", val);
-    add_field(fld, fld1);
-
-    val = alloc_mem(6);
-    memcpy(val, cfg->net_config.mac_addr, 6);
-    fld1 = new_array_u8(KEY_MAC_ADDR, 6, "mac", val);
-    add_field(fld, fld1);
     add_field(root, fld);
     /********************************************/
 
     /********* uart_config[NUM_UARTS] ***********/
-    fld = new_field(KEY_UART_CONFIG, FT_ARRAY, "uart_config", NULL);
+    fld = new_rec(KEY_UART_CONFIG, "uart_config");
     for (i=0; i<NUM_UARTS; i++) {
         field_t *f, *f1;
-        f = new_field(i, FT_REC, NULL, NULL);
-         val = alloc_mem(sizeof(uint32_t));
-        *(uint32_t *)val = cfg->uart_config[i].baudrate;
-        f1 = new_field(KEY_BAUDRATE, FT_U32, "baudrate", val);
+        f = new_rec(i, NULL);
+        
+        f1 = new_val(KEY_BAUDRATE, FT_U32, "baudrate", &cfg->uart_config[i].baudrate);
         add_field(f, f1);
-         val = alloc_mem(sizeof(uint8_t));
-        *(uint8_t *)val = cfg->uart_config[i].stopbits;
-        f1 = new_field(KEY_STOPBITS, FT_U8, "stopbits", val);
+        f1 = new_val(KEY_STOPBITS, FT_U8, "stopbits", &cfg->uart_config[i].stopbits);
         add_field(f, f1);
-         val = alloc_mem(sizeof(char));
-        *(char*)val = cfg->uart_config[i].parity;
-        f1 = new_field(KEY_PARITY, FT_CHAR, "parity", val);
+        f1 = new_val(KEY_PARITY, FT_CHAR, "parity", &cfg->uart_config[i].parity);
         add_field(f, f1);
-         val = alloc_mem(sizeof(uint8_t));
-        *(uint8_t *)val = cfg->uart_config[i].master;
-        f1 = new_field(KEY_MASTER, FT_U8, "master", val);
+        f1 = new_val(KEY_MASTER, FT_U8, "master", &cfg->uart_config[i].master);
         add_field(f, f1);
+        
         add_field(fld, f);
     }
     add_field(root, fld);
     /********************************************/
 
     /******** rs485gw_config[NUM_UARTS] *********/
-    fld = new_field(KEY_GW_CONFIG, FT_ARRAY, "rs485gw_config", NULL);
+    fld = new_rec(KEY_GW_CONFIG, "rs485gw_config");
     for (i=0; i<NUM_UARTS; i++) {
         field_t *f, *f1;
-        f = new_field(i, FT_REC, NULL, NULL);
+        f = new_rec(i, NULL);
         
-        val = alloc_mem(sizeof(uint8_t));
-        *(uint8_t *)val = cfg->rs485gw_config[i].protocol;
-        f1 = new_field(KEY_PROTOCOL, FT_U8, "protocol", val);
+        f1 = new_val(KEY_PROTOCOL, FT_U8, "protocol", &cfg->rs485gw_config[i].protocol);
         add_field(f, f1);
-
-        //val = alloc_mem(sizeof(uint8_t));
-        //*(uint8_t *)val = cfg->rs485gw_config[i].pad;
-        //f1 = new_field(KEY_PAD, FT_U8, val);
+        //f1 = new_field(KEY_PAD, FT_U8, &cfg->rs485gw_config[i].pad);
         //add_field(f, f1);
-        
-        val = alloc_mem(sizeof(uint16_t));
-        *(uint16_t *)val = cfg->rs485gw_config[i].port;
-        f1 = new_field(KEY_PORT, FT_U16, "port", val);
+        f1 = new_val(KEY_PORT, FT_U16, "port", &cfg->rs485gw_config[i].port);
         add_field(f, f1);
-
-        val = alloc_mem(4);
-        memcpy(val, cfg->rs485gw_config[i].to_ip, 4);
-        f1 = new_array_u8(KEY_TO_IP, 4, "to_ip", val);
+        f1 = new_array(KEY_TO_IP, FT_U8, 4, "to_ip", cfg->rs485gw_config[i].to_ip);
         add_field(f, f1);
-
-        val = alloc_mem(sizeof(uint16_t));
-        *(uint16_t *)val = cfg->rs485gw_config[i].to_port;
-        f1 = new_field(KEY_TO_PORT, FT_U16, "to_port", val);
+        f1 = new_val(KEY_TO_PORT, FT_U16, "to_port", &cfg->rs485gw_config[i].to_port);
         add_field(f, f1);
         
         add_field(fld, f);
@@ -479,40 +424,28 @@ int cfg_export(config_t *cfg)
     /********************************************/
 
     /************ snmp_config *******************/
-    fld = new_field(KEY_SNMP_CONFIG, FT_REC, "snmp_config", NULL);
+    fld = new_rec(KEY_SNMP_CONFIG, "snmp_config");
    
-    val = alloc_mem(sizeof(uint16_t));
-    *(uint16_t *)val = cfg->snmp_config.snmpv3_enable;
-    fld1 = new_field(KEY_SNMPV3_ENABLE, FT_U16, "snmpv3_enable", val);
+    fld1 = new_val(KEY_SNMPV3_ENABLE, FT_U16, "snmpv3_enable", &cfg->snmp_config.snmpv3_enable);
     add_field(fld, fld1);
 
-    fld1 = new_field(KEY_SNMP_COMMUNITY, FT_REC, "community", NULL);
-    val = alloc_mem(COMMUNITY_NAME_SIZE+1);
-    memcpy(val, cfg->snmp_config.community.read, COMMUNITY_NAME_SIZE+1);
-    fld2 = new_field(KEY_READ, FT_STR, "public", val);
+    fld1 = new_rec(KEY_SNMP_COMMUNITY, "community");
+    fld2 = new_str(KEY_READ, COMMUNITY_NAME_SIZE+1, "public", cfg->snmp_config.community.read);
     add_field(fld1, fld2);
-    val = alloc_mem(COMMUNITY_NAME_SIZE+1);
-    memcpy(val, cfg->snmp_config.community.write, COMMUNITY_NAME_SIZE+1);
-    fld2 = new_field(KEY_WRITE, FT_STR, "private", val);
+    fld2 = new_str(KEY_WRITE, COMMUNITY_NAME_SIZE+1, "private", cfg->snmp_config.community.write);
     add_field(fld1, fld2);
     add_field(fld, fld1);
 
-    fld1 = new_field(KEY_SNMPV3_USER, FT_ARRAY, "snmpv3_users", NULL);
+    fld1 = new_rec(KEY_SNMPV3_USER, "snmpv3_users");
     for (i=0; i<2; i++) {
         field_t *f, *f1;
-        f = new_field(i, FT_REC, NULL, NULL);
+        f = new_rec(i, NULL);
         
-        val = alloc_mem(USER_NAME_SIZE);
-        memcpy(val, cfg->snmp_config.users[i].username, USER_NAME_SIZE);
-        f1 = new_field(KEY_NAME, FT_STR, "name", val);
+        f1 = new_str(KEY_NAME, USER_NAME_SIZE, "name", cfg->snmp_config.users[i].username);
         add_field(f, f1);
-        val = alloc_mem(20);
-        memcpy(val, cfg->snmp_config.users[i].auth_key, 20);
-        f1 = new_array_u8(KEY_AUTH_KEY, 20, "auth_key", val);
+        f1 = new_array(KEY_AUTH_KEY, FT_CHAR, 20, "auth_key", cfg->snmp_config.users[i].auth_key);
         add_field(f, f1);
-        val = alloc_mem(20);
-        memcpy(val, cfg->snmp_config.users[i].priv_key, 20);
-        f1 = new_array_u8(KEY_PRIV_KEY, 20, "priv_key", val);
+        f1 = new_array(KEY_PRIV_KEY, FT_CHAR, 20, "priv_key", cfg->snmp_config.users[i].priv_key);
         add_field(f, f1);
         
         add_field(fld1, f);
@@ -523,18 +456,14 @@ int cfg_export(config_t *cfg)
     /********************************************/
 
     /************** users[8] ********************/
-    fld = new_field(KEY_USERS, FT_ARRAY, "ssh_users", NULL);
+    fld = new_rec(KEY_USERS, "ssh_users");
     for (i=0; i<8; i++) {
         field_t *f, *f1;
-        f = new_field(i, FT_REC, NULL, NULL);
+        f = new_rec(i, NULL);
         
-        val = alloc_mem(USER_NAME_SIZE);
-        memcpy(val, cfg->users[i].name, USER_NAME_SIZE);
-        f1 = new_field(KEY_NAME, FT_STR, "name", val);
+        f1 = new_str(KEY_NAME, USER_NAME_SIZE, "name", cfg->users[i].name);
         add_field(f, f1);
-        val = alloc_mem(32);
-        memcpy(val, cfg->users[i].sshpass, 32);
-        f1 = new_array_u8(KEY_SSHPASS, 32, "ssh_pass", val);
+        f1 = new_array(KEY_SSHPASS, FT_CHAR, 32, "ssh_pass", cfg->users[i].sshpass);
         add_field(f, f1);
         add_field(fld, f);
         if (*cfg->users[i].name == 0) break;
@@ -585,16 +514,16 @@ int cfg_import(config_t *cfg)
     p[1] = KEY_NET_CONFIG;
     p[2] = KEY_IP_ADDR;
     f = get_field(3, p);
-    if (f) memcpy(cfg->net_config.ip_addr, (uint8_t *)f->val, f->sz);
+    if (f) memcpy(cfg->net_config.ip_addr, (uint8_t *)f->val, f->N);
     p[2] = KEY_NETMASK;
     f = get_field(3, p);
-    if (f) memcpy(cfg->net_config.netmask, (uint8_t *)f->val, f->sz);
+    if (f) memcpy(cfg->net_config.netmask, (uint8_t *)f->val, f->N);
     p[2] = KEY_GW_ADDR;
     f = get_field(3, p);
-    if (f) memcpy(cfg->net_config.gateway, (uint8_t *)f->val, f->sz);
+    if (f) memcpy(cfg->net_config.gateway, (uint8_t *)f->val, f->N);
     p[2] = KEY_MAC_ADDR;
     f = get_field(3, p);
-    if (f) memcpy(cfg->net_config.mac_addr, (uint8_t *)f->val, f->sz);
+    if (f) memcpy(cfg->net_config.mac_addr, (uint8_t *)f->val, f->N);
     
     p[1] = KEY_GW_CONFIG;
     f = get_field(2, p);
@@ -613,7 +542,7 @@ int cfg_import(config_t *cfg)
             if (f1) cfg->rs485gw_config[i].to_port = *(uint16_t *)f1->val;
             p1[2] = KEY_TO_IP;
             f1 = get_field_from(f, 3, p1);
-            if (f1) memcpy(cfg->rs485gw_config[i].to_ip, (uint16_t *)f1->val, f1->sz);
+            if (f1) memcpy(cfg->rs485gw_config[i].to_ip, (uint16_t *)f1->val, f1->N);
         }        
     }
 
@@ -642,10 +571,10 @@ int cfg_import(config_t *cfg)
             if (f1) stpcpy(cfg->snmp_config.users[i].username, (char *)f1->val);
             p1[2] = KEY_AUTH_KEY;
             f1 = get_field_from(f, 3, p1);
-            if (f1) memcpy(cfg->snmp_config.users[i].auth_key, (char *)f1->val, f1->sz);
+            if (f1) memcpy(cfg->snmp_config.users[i].auth_key, (char *)f1->val, f1->N);
             p1[2] = KEY_PRIV_KEY;
             f1 = get_field_from(f, 3, p1);
-            if (f1) memcpy(cfg->snmp_config.users[i].priv_key, (char *)f1->val, f1->sz);
+            if (f1) memcpy(cfg->snmp_config.users[i].priv_key, (char *)f1->val, f1->N);
         }
     }
     
@@ -663,7 +592,7 @@ int cfg_import(config_t *cfg)
             }
             p1[2] = KEY_SSHPASS;
             f1 = get_field_from(f, 3, p1);
-            if (f1) memcpy(cfg->users[i].sshpass, (uint8_t *)f1->val, f1->sz);
+            if (f1) memcpy(cfg->users[i].sshpass, (uint8_t *)f1->val, f1->N);
         }
     }    
     return ERR_NONE;

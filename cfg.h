@@ -8,7 +8,7 @@
 #ifndef CFG_H_
 #define CFG_H_
 
-#define VERSION         "1.5"
+#define VERSION         "1.6"
 
 #define CFG_SIGN    (0xF7F57A5A)
 #define CFG_VER     (1)
@@ -153,8 +153,6 @@ enum {
 enum {
     FT_NONE,
     FT_REC,
-    FT_ARRAY,
-    FT_ARRAY_U8,
     FT_CHAR,
     FT_U8,
     FT_U16,
@@ -174,7 +172,7 @@ typedef struct field_list {
 struct field_s {
     int key;
     int type;
-    int sz;
+    int N;
     field_t *next; //point to sibling
     char *name;
     union {
