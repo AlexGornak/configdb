@@ -6,6 +6,7 @@
  */
 #define VERSION         "1.4"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
 #include <stdint.h>
@@ -76,18 +77,31 @@ static void prepare_after_read(field_t *f);
 static void print_bytes_array(int n, uint8_t *a);
 
 #define MEMB_SIZE   4096
-uint8_t memb[MEMB_SIZE];
+cfg_hdr_t *cfg_hdr_ptr;
+uint8_t *memb;
+//uint8_t memb[MEMB_SIZE];
 uint32_t ptr = 0;
 field_t *root;
 
 int main(int argc, char **argv)
 {
-    /*cfg_export(&cfg);
+    memb = MALLOC(MEMB_SIZE);
+    cfg_hdr_ptr = (cfg_hdr_t *)memb;
+    cfg_hdr_ptr->sign = CFG_SIGN;
+    cfg_hdr_ptr->ver = CFG_VER;
+    memb += CFG_HDR_SIZE;
+    
+    cfg_export(&cfg);
     print_field(root, 0);
-    printf("ptr=%d\n", ptr);   
-    cfg_write();*/
-    cfg_read();
     printf("ptr=%d\n", ptr); 
+    cfg_hdr_ptr->size = ptr;  
+    cfg_write();
+    
+    cfg_read();
+    printf("readed=%d bytes\n", ptr); 
+    printf("sign = %08X, ver = %d, size = %d\n", \
+    cfg_hdr_ptr->sign, cfg_hdr_ptr->ver, cfg_hdr_ptr->size);
+    
     print_field(root, 0);
     printf("************************\n\n");
     cfg_import(&cfg1);
@@ -153,8 +167,8 @@ static field_t *new_field(int key, int type, void *val)
     }
     fptr->key = key;
     fptr->type = type;
-    if (val) fptr->data.val = val;
-    else fptr->data.head = NULL;
+    if (val) fptr->val = val;
+    else fptr->head = NULL;
     return fptr;
 }
 
@@ -167,33 +181,29 @@ static field_t *new_bytes_array(int key, int sz, uint8_t *val)
     fptr->key = key;
     fptr->type = FT_BYTES_ARRAY;
     fptr->sz = sz;
-    fptr->data.val = val;
+    fptr->val = val;
     return fptr;
 }
 
 static int add_field(field_t *parent, field_t *child)
 {
-    field_list_t *head;
     if (!parent) return ERR_PARAM;
     if (!child) return ERR_NONE;
-    head = alloc_mem(sizeof(field_list_t));
-    if (!head) return ERR_MEM;
-    head->field = child;
-    head->next = parent->data.head;
-    parent->data.head = head;
+    child->next = parent->head;
+    parent->head = child;
     return ERR_NONE;
 } 
 
 static field_t *get_field_from(field_t *f, int n, int *path)
 {
     int *p = path;
-    field_list_t *l;
+    field_t *l;
     if (n == 0) return f;
     if (f->key == *p) {
         p++; n--;
         if (n == 0) return f;
-        for (l=f->data.head; l; l=l->next) {
-            field_t *fld = get_field_from(l->field, n, p);
+        for (l=f->head; l; l=l->next) {
+            field_t *fld = get_field_from(l, n, p);
             if (fld) return fld;
         }
     }
@@ -219,37 +229,37 @@ static void print_field(field_t *f, int level)
     switch (f->type) {
         case FT_REC:
         case FT_ARRAY:
-            for (field_list_t *l = f->data.head; l; l=l->next) {
-                print_field(l->field, level+1);
+            for (field_t *l = f->head; l; l=l->next) {
+                print_field(l, level+1);
             }
             break;
         case FT_BYTES_ARRAY:
             for (i=0; i<level+1; i++) printf("    ");
             printf("val=[");
-            print_bytes_array(f->sz, (uint8_t *)f->data.val);
+            print_bytes_array(f->sz, (uint8_t *)f->val);
             //for (i=0; i<f->sz; i++)
-                //printf(" %d", ((uint8_t *)f->data.val)[i]);
+                //printf(" %d", ((uint8_t *)f->val)[i]);
             printf("]\n");
             break;
         case FT_CHAR:
             for (i=0; i<level+1; i++) printf("    ");
-            printf("val='%c'\n", *(char *)f->data.val);
+            printf("val='%c'\n", *(char *)f->val);
             break;
         case FT_STR:
             for (i=0; i<level+1; i++) printf("    ");
-            printf("val=%s\n", (char *)f->data.val);
+            printf("val=%s\n", (char *)f->val);
             break;
         case FT_U8:
             for (i=0; i<level+1; i++) printf("    ");
-            printf("val=%d\n", *(uint8_t *)f->data.val);
+            printf("val=%d\n", *(uint8_t *)f->val);
             break;
         case FT_U16:
             for (i=0; i<level+1; i++) printf("    ");
-            printf("val=%d\n", *(uint16_t *)f->data.val);
+            printf("val=%d\n", *(uint16_t *)f->val);
             break;
         case FT_U32:
             for (i=0; i<level+1; i++) printf("    ");
-            printf("val=%u\n", *(uint32_t *)f->data.val);
+            printf("val=%u\n", *(uint32_t *)f->val);
             break;
         default:
             break;
@@ -258,21 +268,22 @@ static void print_field(field_t *f, int level)
 
 static void prepare_to_write(field_t *f)
 {
-    field_list_t *l, *tmp;
+    field_t *tmp, *chld;
+    tmp = f->next;
+    if (tmp)
+        f->next = (field_t *)((pointer)tmp - (pointer)memb);
     switch (f->type) {
         case FT_REC:
         case FT_ARRAY:
-            tmp = f->data.head;
-            if (tmp)
-                f->data.head = (field_list_t *)((pointer)tmp - (pointer)memb);
-            l = tmp;
-            while (l) {
-                prepare_to_write(l->field);
-                l->field = (field_t *)((pointer)l->field - (pointer)memb);
-                tmp = l->next;
-                if (tmp)
-                    l->next = (field_list_t *)((pointer)tmp - (pointer)memb);
-                l = tmp;
+            chld = f->head;
+            if (chld)
+                f->head = (field_t *)((pointer)chld - (pointer)memb);
+            while (chld) {
+                tmp = chld->next;
+                prepare_to_write(chld);
+                //if (tmp)
+                    //chld->next = (field_t *)((pointer)tmp - (pointer)memb);
+                chld = tmp;
             }
             break;
         case FT_BYTES_ARRAY:
@@ -281,30 +292,29 @@ static void prepare_to_write(field_t *f)
         case FT_U8:
         case FT_U16:
         case FT_U32:
-            if (f->data.val)
-                f->data.val = (void *)((pointer)f->data.val - (pointer)memb);
+            if (f->val)
+                f->val = (void *)((pointer)f->val - (pointer)memb);
             break;
         default:
             break;
     }
+    
 }
 
 static void prepare_after_read(field_t *f)
 {
-    field_list_t *l;
+    field_t *chld;
+    if (f->next)
+        f->next = (field_t *)((pointer)f->next + (pointer)memb);
     switch (f->type) {
         case FT_REC:
         case FT_ARRAY:
-            if (f->data.head)
-                f->data.head = (field_list_t *)((pointer)f->data.head + (pointer)memb);
-            l = f->data.head;
-            while (l) {
-                //prepare_to_write(l->field);
-                l->field = (field_t *)((pointer)l->field + (pointer)memb);
-                prepare_after_read(l->field);
-                if (l->next)
-                    l->next = (field_list_t *)((pointer)l->next + (pointer)memb);
-                l = l->next;
+            if (f->head)
+                f->head = (field_t *)((pointer)f->head + (pointer)memb);
+            chld = f->head;
+            while (chld) {
+                prepare_after_read(chld);
+                chld = chld->next;
             }
             break;
         case FT_BYTES_ARRAY:
@@ -313,8 +323,8 @@ static void prepare_after_read(field_t *f)
         case FT_U8:
         case FT_U16:
         case FT_U32:
-            if (f->data.val)
-                f->data.val = (void *)((pointer)f->data.val + (pointer)memb);
+            if (f->val)
+                f->val = (void *)((pointer)f->val + (pointer)memb);
             break;
         default:
             break;
@@ -510,15 +520,15 @@ int cfg_import(config_t *cfg)
     
     int p[] = {KEY_CONFIG, KEY_FLASH_KEY, 0, 0};
     f = get_field(2, p);
-    if (f) cfg->flash_key = *(uint32_t *)f->data.val;
+    if (f) cfg->flash_key = *(uint32_t *)f->val;
     
     p[1] = KEY_VERSION;
     f = get_field(2, p);
-    if (f) cfg->version = *(uint16_t *)f->data.val;
+    if (f) cfg->version = *(uint16_t *)f->val;
     
     p[1] = KEY_NAME;
     f = get_field(2, p);
-    if (f) strcpy(cfg->rs485gw_name, (char *)f->data.val);
+    if (f) strcpy(cfg->rs485gw_name, (char *)f->val);
     
     p[1] = KEY_UART_CONFIG;
     f = get_field(2, p);
@@ -528,32 +538,32 @@ int cfg_import(config_t *cfg)
             p1[1] = i;
             p1[2] = KEY_BAUDRATE;
             f1 = get_field_from(f, 3, p1);
-            if (f1) cfg->uart_config[i].baudrate = *(uint32_t *)f1->data.val;
+            if (f1) cfg->uart_config[i].baudrate = *(uint32_t *)f1->val;
             p1[2] = KEY_STOPBITS;
             f1 = get_field_from(f, 3, p1);
-            if (f1) cfg->uart_config[i].stopbits = *(uint8_t *)f1->data.val;
+            if (f1) cfg->uart_config[i].stopbits = *(uint8_t *)f1->val;
             p1[2] = KEY_PARITY;
             f1 = get_field_from(f, 3, p1);
-            if (f1) cfg->uart_config[i].parity = *(char *)f1->data.val;
+            if (f1) cfg->uart_config[i].parity = *(char *)f1->val;
             p1[2] = KEY_MASTER;
             f1 = get_field_from(f, 3, p1);
-            if (f1) cfg->uart_config[i].master = *(uint8_t *)f1->data.val;
+            if (f1) cfg->uart_config[i].master = *(uint8_t *)f1->val;
         }
     }
     
     p[1] = KEY_NET_CONFIG;
     p[2] = KEY_IP_ADDR;
     f = get_field(3, p);
-    if (f) memcpy(cfg->net_config.ip_addr, (uint8_t *)f->data.val, f->sz);
+    if (f) memcpy(cfg->net_config.ip_addr, (uint8_t *)f->val, f->sz);
     p[2] = KEY_NETMASK;
     f = get_field(3, p);
-    if (f) memcpy(cfg->net_config.netmask, (uint8_t *)f->data.val, f->sz);
+    if (f) memcpy(cfg->net_config.netmask, (uint8_t *)f->val, f->sz);
     p[2] = KEY_GW_ADDR;
     f = get_field(3, p);
-    if (f) memcpy(cfg->net_config.gateway, (uint8_t *)f->data.val, f->sz);
+    if (f) memcpy(cfg->net_config.gateway, (uint8_t *)f->val, f->sz);
     p[2] = KEY_MAC_ADDR;
     f = get_field(3, p);
-    if (f) memcpy(cfg->net_config.mac_addr, (uint8_t *)f->data.val, f->sz);
+    if (f) memcpy(cfg->net_config.mac_addr, (uint8_t *)f->val, f->sz);
     
     p[1] = KEY_GW_CONFIG;
     f = get_field(2, p);
@@ -563,16 +573,16 @@ int cfg_import(config_t *cfg)
             p1[1] = i;
             p1[2] = KEY_PROTOCOL;
             f1 = get_field_from(f, 3, p1);
-            if (f1) cfg->rs485gw_config[i].protocol = *(uint8_t *)f1->data.val;
+            if (f1) cfg->rs485gw_config[i].protocol = *(uint8_t *)f1->val;
             p1[2] = KEY_PORT;
             f1 = get_field_from(f, 3, p1);
-            if (f1) cfg->rs485gw_config[i].port = *(uint16_t *)f1->data.val;
+            if (f1) cfg->rs485gw_config[i].port = *(uint16_t *)f1->val;
             p1[2] = KEY_TO_PORT;
             f1 = get_field_from(f, 3, p1);
-            if (f1) cfg->rs485gw_config[i].to_port = *(uint16_t *)f1->data.val;
+            if (f1) cfg->rs485gw_config[i].to_port = *(uint16_t *)f1->val;
             p1[2] = KEY_TO_IP;
             f1 = get_field_from(f, 3, p1);
-            if (f1) memcpy(cfg->rs485gw_config[i].to_ip, (uint16_t *)f1->data.val, f1->sz);
+            if (f1) memcpy(cfg->rs485gw_config[i].to_ip, (uint16_t *)f1->val, f1->sz);
         }        
     }
 
@@ -580,15 +590,15 @@ int cfg_import(config_t *cfg)
     
     p[2] = KEY_SNMPV3_ENABLE;
     f = get_field(3, p);
-    if (f) cfg->snmp_config.snmpv3_enable = *(uint8_t *)f->data.val;
+    if (f) cfg->snmp_config.snmpv3_enable = *(uint8_t *)f->val;
     
     p[2] = KEY_SNMP_COMMUNITY;
     p[3] = KEY_READ;
     f = get_field(4, p);
-    if (f) strcpy(cfg->snmp_config.community.read, (char *)f->data.val);
+    if (f) strcpy(cfg->snmp_config.community.read, (char *)f->val);
     p[3] = KEY_WRITE;
     f = get_field(4, p);
-    if (f) strcpy(cfg->snmp_config.community.write, (char *)f->data.val);
+    if (f) strcpy(cfg->snmp_config.community.write, (char *)f->val);
 
     p[2] = KEY_SNMPV3_USER;
     f = get_field(3, p);
@@ -598,13 +608,13 @@ int cfg_import(config_t *cfg)
             p1[1] = i;
             p1[2] = KEY_NAME;
             f1 = get_field_from(f, 3, p1);
-            if (f1) stpcpy(cfg->snmp_config.users[i].username, (char *)f1->data.val);
+            if (f1) stpcpy(cfg->snmp_config.users[i].username, (char *)f1->val);
             p1[2] = KEY_AUTH_KEY;
             f1 = get_field_from(f, 3, p1);
-            if (f1) memcpy(cfg->snmp_config.users[i].auth_key, (char *)f1->data.val, f1->sz);
+            if (f1) memcpy(cfg->snmp_config.users[i].auth_key, (char *)f1->val, f1->sz);
             p1[2] = KEY_PRIV_KEY;
             f1 = get_field_from(f, 3, p1);
-            if (f1) memcpy(cfg->snmp_config.users[i].priv_key, (char *)f1->data.val, f1->sz);
+            if (f1) memcpy(cfg->snmp_config.users[i].priv_key, (char *)f1->val, f1->sz);
         }
     }
     
@@ -617,12 +627,12 @@ int cfg_import(config_t *cfg)
             p1[2] = KEY_NAME;
             f1 = get_field_from(f, 3, p1);
             if (f1) {
-                strcpy(cfg->users[i].name, (char *)f1->data.val);
-                if (*(char *)f1->data.val == 0) break;
+                strcpy(cfg->users[i].name, (char *)f1->val);
+                if (*(char *)f1->val == 0) break;
             }
             p1[2] = KEY_SSHPASS;
             f1 = get_field_from(f, 3, p1);
-            if (f1) memcpy(cfg->users[i].sshpass, (uint8_t *)f1->data.val, f1->sz);
+            if (f1) memcpy(cfg->users[i].sshpass, (uint8_t *)f1->val, f1->sz);
         }
     }    
     return ERR_NONE;
@@ -633,7 +643,7 @@ int cfg_write(void)
     FILE *fd;     
     prepare_to_write(root);
     fd = fopen("config.cfg", "wb"); 
-    fwrite(memb, sizeof(uint8_t), ptr, fd);
+    fwrite(cfg_hdr_ptr, sizeof(uint8_t), ptr+CFG_HDR_SIZE, fd);
     fclose(fd);
     return ERR_NONE;
 }
@@ -643,10 +653,11 @@ int cfg_read(void)
     FILE *fd;     
     fd = fopen("config.cfg", "rb"); 
     if (fd) {
-        ptr = fread(memb, sizeof(uint8_t), MEMB_SIZE, fd);
+        ptr = fread(cfg_hdr_ptr, sizeof(uint8_t), MEMB_SIZE, fd);
         fclose(fd);
     }
     root = (field_t *)memb;
+    
     prepare_after_read(root);
     return ERR_NONE;
 

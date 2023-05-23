@@ -8,6 +8,13 @@
 #ifndef CFG_H_
 #define CFG_H_
 
+#define CFG_SIGN    (0xF7F57A5A)
+#define CFG_VER     (1)
+
+#define MALLOC(size)            malloc(size)
+#define FREE(ptr)               free(ptr)
+
+
 #define NUM_UARTS               2
 #define COMMUNITY_NAME_SIZE     32
 #define USER_NAME_SIZE          20
@@ -65,6 +72,47 @@ typedef struct{
     snmp_config_t snmp_config;
     user_t users[8];
 } config_t;
+
+#define key_cfg         1
+//config childs
+#define key_flash_key   1
+#define key_version     2
+#define key_name        3
+#define key_net_cfg     4
+#define key_uart_cfg    5
+#define key_rs485gw_cfg 6
+#define key_snmp_cfg    7
+#define key_users       8
+//net_config childs
+#define key_ip_addr     1
+#define key_netmask     2
+#define key_gateway     3
+#define key_mac_addr    4
+//uart_config childs
+#define key_baudrate    1
+#define key_stopbits    2
+#define key_parity      3
+#define key_master      4
+//rs485gw_config childs
+#define key_protocol    1
+#define key_port        2
+#define key_to_ip       3
+#define key_to_port     4
+//snmp_config childs
+#define key_snmpv3_enable   1
+#define key_community       2
+#define key_snmpv3_users    3
+//users array childs
+#define key_username            1
+#define key_sshpass         2
+//snmp community childs
+#define key_read            1
+#define key_write           2
+//snmp users array childs
+#define key_snmp_username   1
+#define key_auth_key        2
+#define key_priv_key        3
+
 
 enum {
     KEY_NONE,
@@ -125,11 +173,20 @@ struct field_s {
     int key;
     int type;
     int sz;
+    field_t *next; //point to sibling
     union {
         void *val;
-        field_list_t *head;
-    } data;
+        field_t *head; //point to list of childs
+    };
 };
+
+
+typedef struct {
+    uint32_t sign;
+    uint16_t ver; 
+    uint16_t size;
+} cfg_hdr_t;
+#define CFG_HDR_SIZE    sizeof(cfg_hdr_t)
 
 // export config to tree field_t
 int cfg_export(config_t *cfg);
